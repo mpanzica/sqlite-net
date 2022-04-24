@@ -23,6 +23,8 @@
 #define USE_CSHARP_SQLITE
 #endif
 
+#define USE_SQLITEPCL_RAW
+
 using System;
 using System.Collections;
 using System.Diagnostics;
@@ -156,7 +158,11 @@ namespace SQLite
 		/// <summary>
 		/// Create virtual table using FTS4
 		/// </summary>
-		FullTextSearch4 = 0x200
+		FullTextSearch4 = 0x200,
+		/// <summary>
+		/// Create virtual table using FTS5
+		/// </summary>
+		FullTextSearch5 = 0x400
 	}
 
 	/// <summary>
@@ -561,11 +567,12 @@ namespace SQLite
 			if (existingCols.Count == 0) {
 
 				// Facilitate virtual tables a.k.a. full-text search.
-				bool fts3 = (createFlags & CreateFlags.FullTextSearch3) != 0;
-				bool fts4 = (createFlags & CreateFlags.FullTextSearch4) != 0;
-				bool fts = fts3 || fts4;
+				bool fts3 = createFlags.HasFlag(CreateFlags.FullTextSearch3);
+				bool fts4 = createFlags.HasFlag(CreateFlags.FullTextSearch4);
+				bool fts5 = createFlags.HasFlag(CreateFlags.FullTextSearch5);
+				bool fts = fts3 || fts4 || fts5;
 				var @virtual = fts ? "virtual " : string.Empty;
-				var @using = fts3 ? "using fts3 " : fts4 ? "using fts4 " : string.Empty;
+				var @using = fts3 ? "using fts3 " : fts4 ? "using fts4 " : fts5 ? "using fts5 " : string.Empty;
 
 				// Build query.
 				var query = "create " + @virtual + "table if not exists \"" + map.TableName + "\" " + @using + "(\n";
@@ -1001,7 +1008,7 @@ namespace SQLite
 		/// <returns>
 		/// An enumerable with one result for each row returned by the query.
 		/// </returns>
-		public List<T> Query<T> (string query, params object[] args) where T : new()
+		public List<T> Query<T> (string query, params object[] args) //where T : new()
 		{
 			var cmd = CreateCommand (query, args);
 			return cmd.ExecuteQuery<T> ();
@@ -1045,7 +1052,7 @@ namespace SQLite
 		/// will call sqlite3_step on each call to MoveNext, so the database
 		/// connection must remain open for the lifetime of the enumerator.
 		/// </returns>
-		public IEnumerable<T> DeferredQuery<T> (string query, params object[] args) where T : new()
+		public IEnumerable<T> DeferredQuery<T> (string query, params object[] args) //where T : new()
 		{
 			var cmd = CreateCommand (query, args);
 			return cmd.ExecuteDeferredQuery<T> ();
@@ -1113,7 +1120,7 @@ namespace SQLite
 		/// A queryable object that is able to translate Where, OrderBy, and Take
 		/// queries into native SQL.
 		/// </returns>
-		public TableQuery<T> Table<T> () where T : new()
+		public TableQuery<T> Table<T> () //where T : new()
 		{
 			return new TableQuery<T> (this);
 		}
@@ -1130,7 +1137,7 @@ namespace SQLite
 		/// The object with the given primary key. Throws a not found exception
 		/// if the object is not found.
 		/// </returns>
-		public T Get<T> (object pk) where T : new()
+		public T Get<T> (object pk) //where T : new()
 		{
 			var map = GetMapping (typeof (T));
 			return Query<T> (map.GetByPrimaryKeySql, pk).First ();
@@ -1167,7 +1174,7 @@ namespace SQLite
 		/// The object that matches the given predicate. Throws a not found exception
 		/// if the object is not found.
 		/// </returns>
-		public T Get<T> (Expression<Func<T, bool>> predicate) where T : new()
+		public T Get<T> (Expression<Func<T, bool>> predicate) //where T : new()
 		{
 			return Table<T> ().Where (predicate).First ();
 		}
@@ -1184,7 +1191,7 @@ namespace SQLite
 		/// The object with the given primary key or null
 		/// if the object is not found.
 		/// </returns>
-		public T Find<T> (object pk) where T : new()
+		public T Find<T> (object pk) //where T : new()
 		{
 			var map = GetMapping (typeof (T));
 			return Query<T> (map.GetByPrimaryKeySql, pk).FirstOrDefault ();
@@ -1221,7 +1228,7 @@ namespace SQLite
 		/// The object that matches the given predicate or null
 		/// if the object is not found.
 		/// </returns>
-		public T Find<T> (Expression<Func<T, bool>> predicate) where T : new()
+		public T Find<T> (Expression<Func<T, bool>> predicate) //where T : new()
 		{
 			return Table<T> ().Where (predicate).FirstOrDefault ();
 		}
@@ -1240,7 +1247,7 @@ namespace SQLite
 		/// The object that matches the given predicate or null
 		/// if the object is not found.
 		/// </returns>
-		public T FindWithQuery<T> (string query, params object[] args) where T : new()
+		public T FindWithQuery<T> (string query, params object[] args) //where T : new()
 		{
 			return Query<T> (query, args).FirstOrDefault ();
 		}
@@ -2424,7 +2431,22 @@ namespace SQLite
 	{
 	}
 
-	public class TableMapping
+	[AttributeUsage(AttributeTargets.Class)]
+	public class EndOfMappingAttribute : Attribute 
+	{
+	}
+
+	[AttributeUsage(AttributeTargets.Property)]
+	public class ConvertToAttribute : Attribute
+	{
+		public Type ColumnType { get; set; }
+
+		public ConvertToAttribute(Type columnType) {
+			ColumnType = columnType;
+		}
+	}
+
+	public partial class TableMapping
 	{
 		public Type MappedType { get; private set; }
 
@@ -2515,7 +2537,7 @@ namespace SQLite
 					where !memberNames.Contains(p.Name) &&
 						p.CanRead && p.CanWrite &&
 						p.GetMethod != null && p.SetMethod != null &&
-						p.GetMethod.IsPublic && p.SetMethod.IsPublic &&
+						//p.GetMethod.IsPublic && p.SetMethod.IsPublic &&
 						!p.GetMethod.IsStatic && !p.SetMethod.IsStatic
 					select p);
 
@@ -2523,6 +2545,11 @@ namespace SQLite
 				foreach(var m in newMembers)
 					memberNames.Add(m.Name);
 
+				//When this attribute is assigned to a class, this procedure
+				//will not process any more properties down the hierarchy.
+				if (type.IsDefined(typeof(EndOfMappingAttribute), false))
+					break; 
+				
 				type = ti.BaseType;
 			}
 			while(type != typeof(object));
@@ -2605,10 +2632,15 @@ namespace SQLite
 
 			public bool StoreAsText { get; private set; }
 
+			public bool IsConversionRequired { get; private set; }
+
 			public Column (MemberInfo member, CreateFlags createFlags = CreateFlags.None)
 			{
 				_member = member;
-				var memberType = GetMemberType(member);
+
+				var convAttr = member.GetCustomAttribute<ConvertToAttribute>();
+				IsConversionRequired = convAttr != null;
+				var memberType = convAttr?.ColumnType ?? GetMemberType(member);
 
 				var colAttr = member.CustomAttributes.FirstOrDefault (x => x.AttributeType == typeof (ColumnAttribute));
 #if ENABLE_IL2CPP
@@ -2651,32 +2683,40 @@ namespace SQLite
 
 			public void SetValue (object obj, object val)
 			{
-				if(_member is PropertyInfo propy)
-				{
-					if (val != null && ColumnType.GetTypeInfo ().IsEnum)
-						propy.SetValue (obj, Enum.ToObject (ColumnType, val));
-					else
-						propy.SetValue (obj, val);
-				}
-				else if(_member is FieldInfo field)
-				{
-					if (val != null && ColumnType.GetTypeInfo ().IsEnum)
-						field.SetValue (obj, Enum.ToObject (ColumnType, val));
-					else
-						field.SetValue (obj, val);
-				}
-				else
-					throw new InvalidProgramException("unreachable condition");
-			}
+                if (val != null && ColumnType.GetTypeInfo().IsEnum)
+                    val = Enum.ToObject(ColumnType, val);
 
-			public object GetValue (object obj)
+				if (IsConversionRequired) {
+					if (SQLiteTypeConverter.Instance == null)
+						throw new NotImplementedException("SQLiteTypeConverter");
+					val = SQLiteTypeConverter.Instance.ToMemberType(val, GetMemberType(_member));
+				}
+
+				if (_member is PropertyInfo propy) 
+					propy.SetValue(obj, val);
+                else if (_member is FieldInfo field) 
+					field.SetValue(obj, val);
+                else
+                    throw new InvalidProgramException("unreachable condition");
+            }
+
+            public object GetValue (object obj)
 			{
+				object result;
 				if(_member is PropertyInfo propy)
-					return propy.GetValue(obj);
+					result = propy.GetValue(obj);
 				else if(_member is FieldInfo field)
-					return field.GetValue(obj);
+					result = field.GetValue(obj);
 				else
 					throw new InvalidProgramException("unreachable condition");
+
+				if (IsConversionRequired)
+				{
+					if (SQLiteTypeConverter.Instance == null) 
+						throw new NotImplementedException("SQLiteTypeConverter");
+					return SQLiteTypeConverter.Instance.ToColumnType(result);
+				}
+				return result;
 			}
 
 			private static Type GetMemberType(MemberInfo m)
@@ -3032,7 +3072,7 @@ namespace SQLite
 				}
 
 				while (SQLite3.Step (stmt) == SQLite3.Result.Row) {
-					var obj = Activator.CreateInstance (map.MappedType);
+					var obj = Activator.CreateInstance (map.MappedType, true); //'true' allows for private constructors);
 					for (int i = 0; i < cols.Length; i++) {
 						if (cols[i] == null)
 							continue;
@@ -4854,5 +4894,16 @@ namespace SQLite
 			Blob = 4,
 			Null = 5
 		}
+	}
+
+	public interface ISQLiteTypeConverter
+	{
+		object ToMemberType(object columnValue, Type memberType);
+		object ToColumnType(object memberValue);
+	}
+
+	public static class SQLiteTypeConverter
+	{
+		public static ISQLiteTypeConverter Instance { get; set; }
 	}
 }
